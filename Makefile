@@ -1,6 +1,7 @@
 dev:
 	@trap 'make dev-down' EXIT; COMPOSE_BAKE=true docker compose -f ./docker/docker-compose.dev.yml up --remove-orphans
 
+.PHONY: build-macos-app
 build-macos-app:
 	./desktop-macos/scripts/build-app.sh
 
