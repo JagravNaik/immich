@@ -29,14 +29,16 @@ Suggested v1 scope:
 
 ```text
 desktop-macos/
-  ImmichMacApp/                # SwiftUI app target
-  Packages/
-    ImmichAPI/                 # generated + wrapped API client from open-api/
-    ImmichCore/                # models/use-cases shared across macOS modules
-    ImmichPersistence/         # SQLite/GRDB schema + repositories
+  Package.swift                # SwiftPM manifest for the app and supporting modules
+  Sources/
+    ImmichMacApp/              # SwiftUI app target
+    ImmichAPI/                 # API client wrappers around Immich endpoints
+    ImmichCore/                # shared models and view/app state contracts
+    ImmichPersistence/         # local asset metadata/cache helpers
     ImmichMedia/               # thumbnail/video loading and cache
-    ImmichSync/                # upload queue + folder watcher
-  ImmichMacApp.xcodeproj
+    ImmichSync/                # upload queue and sync plumbing
+  Tests/
+    ImmichAPITests/            # API/client regression coverage
 ```
 
 ## Architecture choices
@@ -112,12 +114,12 @@ desktop-macos/
 
 ## First week execution checklist
 
-1. Scaffold `desktop-macos/ImmichMacApp` in the monorepo.
-2. Generate Swift API client from `open-api/` and wire login flow.
-3. Render timeline thumbnails from real server data.
-4. Add basic drag-and-drop upload queue.
-5. Set up CI build + smoke UI test on a macOS runner.
+1. Expand automated coverage for the existing SwiftPM package and app modules.
+2. Tighten API generation/reuse from `open-api/` where the handwritten wrappers still duplicate contracts.
+3. Continue polishing large-library timeline performance and caching behavior.
+4. Deepen upload/watch-folder flows and failure recovery.
+5. Add broader UI smoke coverage on a macOS runner.
 
 ---
 
-Next step: scaffold a minimal `desktop-macos/` app target in this repository with login + read-only timeline, then iterate by milestones.
+Next step: iterate on the existing `desktop-macos/` SwiftUI app target, expanding beyond the current browser/editor foundation and delivering the remaining milestones above.
