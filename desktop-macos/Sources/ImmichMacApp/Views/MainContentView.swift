@@ -388,27 +388,22 @@ struct MainContentView: View {
 
       // View options
       Menu {
-        Button("Hide Screenshots") {
-          // TODO: Implement screenshot filtering.
+        Toggle("Hide Screenshots", isOn: $appState.hideScreenshots)
+
+        Picker("Filter", selection: $appState.filterOption) {
+          Text("All Items").tag(AppState.FilterOption.all)
+          Text("Show Only Photos").tag(AppState.FilterOption.photosOnly)
+          Text("Show Only Videos").tag(AppState.FilterOption.videosOnly)
         }
-        .disabled(true)
-        Button("Show Only Photos") {
-          // TODO: Implement photos-only filtering.
-        }
-        .disabled(true)
-        Button("Show Only Videos") {
-          // TODO: Implement videos-only filtering.
-        }
-        .disabled(true)
+        .pickerStyle(.inline)
+
         Divider()
-        Button("Sort by Date Captured") {
-          // TODO: Implement captured-date sorting.
+
+        Picker("Sort", selection: $appState.sortOption) {
+          Text("Sort by Date Captured").tag(AppState.SortOption.dateCaptured)
+          Text("Sort by Date Added").tag(AppState.SortOption.dateAdded)
         }
-        .disabled(true)
-        Button("Sort by Date Added") {
-          // TODO: Implement added-date sorting.
-        }
-        .disabled(true)
+        .pickerStyle(.inline)
       } label: {
         Image(systemName: "line.3.horizontal.decrease.circle")
       }

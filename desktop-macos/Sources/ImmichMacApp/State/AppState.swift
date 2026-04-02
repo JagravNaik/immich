@@ -29,6 +29,21 @@ final class AppState: ObservableObject {
     var id: Self { self }
   }
 
+  enum SortOption: String, CaseIterable, Identifiable {
+    case dateCaptured = "Date Captured"
+    case dateAdded = "Date Added"
+
+    var id: Self { self }
+  }
+
+  enum FilterOption: String, CaseIterable, Identifiable {
+    case all = "All"
+    case photosOnly = "Photos Only"
+    case videosOnly = "Videos Only"
+
+    var id: Self { self }
+  }
+
   // MARK: - Photo Item (unified model for display)
 
   struct PhotoItem: Identifiable {
@@ -112,6 +127,11 @@ final class AppState: ObservableObject {
   @Published var isLoadingTimeline = false
   @Published var searchText = ""
   @Published var photoGridScaleIndex = AppState.initialPhotoGridScaleIndex()
+
+  // Filter & Sort
+  @Published var sortOption: SortOption = .dateCaptured
+  @Published var filterOption: FilterOption = .all
+  @Published var hideScreenshots: Bool = false
 
   // Smart search
   @Published var searchResults: [PhotoItem] = []
@@ -305,14 +325,40 @@ final class AppState: ObservableObject {
       }
     }()
 
-    guard !searchText.isEmpty else { return sectionFiltered }
-    // If we have server search results, show those instead of local filter
-    if !searchResults.isEmpty || isSearching {
-      return searchResults
+    var result = sectionFiltered
+
+    if !searchText.isEmpty {
+      // If we have server search results, show those instead of local filter
+      if !searchResults.isEmpty || isSearching {
+        result = searchResults
+      } else {
+        result = sectionFiltered.filter {
+          $0.title.localizedCaseInsensitiveContains(searchText)
+        }
+      }
     }
-    return sectionFiltered.filter {
-      $0.title.localizedCaseInsensitiveContains(searchText)
+
+    if hideScreenshots {
+      result = result.filter { !$0.title.localizedCaseInsensitiveContains("screenshot") }
     }
+
+    switch filterOption {
+    case .photosOnly:
+      result = result.filter { !$0.isVideo }
+    case .videosOnly:
+      result = result.filter { $0.isVideo }
+    case .all:
+      break
+    }
+
+    switch sortOption {
+    case .dateCaptured:
+      result.sort { $0.date > $1.date }
+    case .dateAdded:
+      result.sort { $0.id > $1.id }
+    }
+
+    return result
   }
 
   var photoGridThumbnailWidth: CGFloat {
@@ -642,6 +688,9 @@ final class AppState: ObservableObject {
     searchResults = []
     isSearching = false
     searchTotalCount = 0
+    sortOption = .dateCaptured
+    filterOption = .all
+    hideScreenshots = false
     selectedItemID = nil
     isMultiSelectMode = false
     selectedItemIDs = []
