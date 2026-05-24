@@ -1,8 +1,22 @@
 #if canImport(SwiftUI) && canImport(AppKit)
 import SwiftUI
 import AppKit
+import ImmichCore
 
 let photoHeroCoordinateSpaceName = "ImmichPhotoHero"
+
+struct InteractiveDismissPresentation: Equatable {
+  let offset: CGSize
+  let scale: CGFloat
+  let backdropOpacity: Double
+  let progress: CGFloat
+
+  static let identity = InteractiveDismissPresentation(offset: .zero, scale: 1, backdropOpacity: 0.96, progress: 0)
+
+  var isInteractive: Bool {
+    progress > 0.001
+  }
+}
 
 // MARK: - Main Content View (Photos-style three-pane layout)
 
@@ -10,10 +24,14 @@ struct MainContentView: View {
   @StateObject var appState: AppState
   @StateObject private var thumbnailStore = ThumbnailStore()
   @StateObject private var editingPipeline = PhotoEditingPipeline()
+  @StateObject private var assetInfoPanelController = AssetInfoPanelController()
   @State private var spacebarMonitor: Any?
   @State private var heroTransition: HeroTransitionState?
   @State private var heroItemFrames: [String: CGRect] = [:]
   @State private var isHeroExpanded = false
+  @State private var interactiveDismissPresentation: InteractiveDismissPresentation = .identity
+  @State private var isSearchPresented = false
+  @State private var showSearchSuggestions = false
 
   struct HeroTransitionState: Equatable {
     enum Direction: Equatable {
@@ -26,12 +44,14 @@ struct MainContentView: View {
     let sourceFrame: CGRect
     let image: NSImage
     let aspectRatio: CGFloat
+    let expandedPresentation: InteractiveDismissPresentation
 
     static func == (lhs: HeroTransitionState, rhs: HeroTransitionState) -> Bool {
       lhs.itemID == rhs.itemID
         && lhs.direction == rhs.direction
         && lhs.sourceFrame == rhs.sourceFrame
         && lhs.aspectRatio == rhs.aspectRatio
+        && lhs.expandedPresentation == rhs.expandedPresentation
     }
   }
 
@@ -82,6 +102,7 @@ struct MainContentView: View {
       heroItemFrames = [:]
       dismissViewer()
     }
+    .animation(ImmichMotion.Curves.structuralShort, value: appState.sidebarSelection)
     .sheet(isPresented: $appState.showCreateAlbumSheet) {
       CreateAlbumSheet(appState: appState)
     }
@@ -100,6 +121,25 @@ struct MainContentView: View {
     .sheet(isPresented: $appState.showAdminUsersSheet) {
       AdminUsersSheet(appState: appState)
     }
+    .alert("Immich Update Available", isPresented: $appState.showVersionAnnouncement) {
+      Button("Release Notes") {
+        if let releaseVersion = appState.availableReleaseVersion,
+           let url = URL(string: "https://github.com/immich-app/immich/releases/tag/\(releaseVersion)") {
+          NSWorkspace.shared.open(url)
+        }
+        appState.dismissVersionAnnouncement()
+      }
+      Button("Dismiss", role: .cancel) {
+        appState.dismissVersionAnnouncement()
+      }
+    } message: {
+      if let releaseVersion = appState.availableReleaseVersion,
+         let serverVersion = appState.availableReleaseServerVersion {
+        Text("Server \(serverVersion) is running. Immich \(releaseVersion) is available.")
+      } else {
+        Text("A newer Immich server version is available.")
+      }
+    }
   }
 
   private func dismissViewer() {
@@ -110,6 +150,7 @@ struct MainContentView: View {
     }
     heroTransition = nil
     isHeroExpanded = false
+    interactiveDismissPresentation = .identity
   }
 
   // MARK: - Detail Area
@@ -117,48 +158,41 @@ struct MainContentView: View {
   @ViewBuilder
   private var detailArea: some View {
     ZStack {
-      VStack(spacing: 0) {
-        contentHeader
-        routedContentView
+      if shouldRenderBackgroundLayer {
+        detailBackgroundLayer
       }
-      .background(.background)
-      .opacity(browserOpacity)
-      .allowsHitTesting(!shouldPresentViewer)
-
-      if shouldPresentViewer, let item = appState.selectedItem {
-        PhotoDetailView(
-          appState: appState,
-          thumbnailStore: thumbnailStore,
-          editingPipeline: editingPipeline,
-          initialDisplayImage: heroSeedImage(for: item),
-          isHeroTransitioning: heroTransition?.itemID == item.id,
-          onDismiss: closeViewer
-        )
-        .opacity(viewerOpacity)
-        .allowsHitTesting(appState.isViewingPhoto && heroTransition == nil)
-
-        if appState.isEditing {
-          HStack(spacing: 0) {
-            Spacer()
-            EditingSidebar(appState: appState, pipeline: editingPipeline, item: item)
-              .transition(.move(edge: .trailing))
-          }
-          .opacity(viewerOpacity)
+      detailOverlayLayer
+      searchSuggestionsLayer
+    }
+    .background {
+      Button("") {
+        withAnimation(ImmichMotion.Curves.searchSpring) {
+          isSearchPresented = true
         }
       }
+      .keyboardShortcut("f", modifiers: .command)
+      .hidden()
+      .accessibilityHidden(true)
 
-      if let heroTransition {
-        HeroOpenOverlay(
-          heroState: heroTransition,
-          isExpanded: isHeroExpanded
-        )
-        .zIndex(3)
-      }
-    }
-    .coordinateSpace(name: photoHeroCoordinateSpaceName)
-    .searchable(text: $appState.searchText, placement: .toolbar, prompt: "Search")
-    .onChange(of: appState.searchText) { _, newValue in
-      appState.performSmartSearch(query: newValue)
+      Button("") { appState.zoomInPhotoGrid() }
+        .keyboardShortcut("+", modifiers: .command)
+        .hidden()
+        .accessibilityHidden(true)
+
+      Button("") { appState.zoomInPhotoGrid() }
+        .keyboardShortcut("=", modifiers: .command)
+        .hidden()
+        .accessibilityHidden(true)
+
+      Button("") { appState.zoomOutPhotoGrid() }
+        .keyboardShortcut("-", modifiers: .command)
+        .hidden()
+        .accessibilityHidden(true)
+
+      Button("") { thumbnailStore.logTelemetry(reason: "keyboard_shortcut") }
+        .keyboardShortcut("m", modifiers: [.command, .shift])
+        .hidden()
+        .accessibilityHidden(true)
     }
     .toolbar {
       if shouldPresentViewer {
@@ -167,17 +201,136 @@ struct MainContentView: View {
         browserToolbar
       }
     }
+    .coordinateSpace(name: photoHeroCoordinateSpaceName)
+    .onChange(of: appState.searchText) { _, newValue in
+      showSearchSuggestions = newValue.isEmpty && isSearchPresented
+      appState.performSearch(query: newValue)
+    }
+    .onChange(of: isSearchPresented) { _, presented in
+      if presented {
+        appState.selectedItemID = nil
+        showSearchSuggestions = appState.searchText.isEmpty
+      } else {
+        appState.searchText = ""
+        showSearchSuggestions = false
+      }
+    }
+    .onChange(of: appState.selectedItemID) { _, newID in
+      if newID != nil && isSearchPresented {
+        withAnimation(ImmichMotion.Curves.searchSpring) {
+          isSearchPresented = false
+        }
+      }
+      syncAssetInfoPanel()
+    }
+    .onChange(of: appState.showInfoPopover) { _, _ in
+      syncAssetInfoPanel()
+    }
+    .onDisappear {
+      assetInfoPanelController.close()
+    }
+  }
+
+  private var detailBackgroundLayer: some View {
+    VStack(spacing: 0) {
+      contentHeader
+      routedContentView
+    }
+    .background(.background)
+    .opacity(browserOpacity)
+    .allowsHitTesting(!shouldPresentViewer)
+    .simultaneousGesture(TapGesture().onEnded {
+      dismissSearchFieldFocus()
+    })
+    .overlay(alignment: .bottom) {
+      if let notification = appState.uploadNotification {
+        UploadFailureBanner(
+          filename: notification.filename,
+          reason: notification.reason,
+          onDismiss: { appState.dismissUploadNotification() }
+        )
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+        .padding(.bottom, 16)
+        .padding(.horizontal, 16)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var detailOverlayLayer: some View {
+    if shouldRenderViewerContent, let item = appState.selectedItem {
+      PhotoDetailView(
+        appState: appState,
+        thumbnailStore: thumbnailStore,
+        editingPipeline: editingPipeline,
+        initialDisplayImage: heroSeedImage(for: item),
+        isHeroTransitioning: heroTransition?.itemID == item.id,
+        onDismissPresentationChanged: { interactiveDismissPresentation = $0 },
+        onDismiss: closeViewer
+      )
+      .opacity(viewerOpacity)
+      .allowsHitTesting(appState.isViewingPhoto && heroTransition == nil)
+
+      if appState.isEditing {
+        HStack(spacing: 0) {
+          Spacer()
+          EditingSidebar(appState: appState, pipeline: editingPipeline, item: item)
+            .transition(.move(edge: .trailing))
+        }
+        .opacity(viewerOpacity)
+      }
+    }
+
+    if let heroTransition {
+      HeroOpenOverlay(
+        heroState: heroTransition,
+        isExpanded: isHeroExpanded
+      )
+      .zIndex(3)
+    }
+  }
+
+  @ViewBuilder
+  private var searchSuggestionsLayer: some View {
+    if showSearchSuggestions && !appState.recentSearches.isEmpty {
+      SearchSuggestionsOverlay(
+        recentSearches: appState.recentSearches,
+        onSelect: { query in
+          appState.searchText = query
+          showSearchSuggestions = false
+        },
+        onClearAll: {
+          appState.clearRecentSearches()
+        }
+      )
+      .frame(maxWidth: 260, alignment: .trailing)
+      .padding(.trailing, 16)
+      .padding(.top, 56)
+      .zIndex(10)
+      .transition(.opacity)
+    }
   }
 
   private var shouldPresentViewer: Bool {
     appState.isViewingPhoto || heroTransition != nil
   }
 
+  private var shouldRenderBackgroundLayer: Bool {
+    if heroTransition != nil {
+      return true
+    }
+    return !appState.isViewingPhoto || interactiveDismissPresentation.isInteractive
+  }
+
+  private var shouldRenderViewerContent: Bool {
+    appState.isViewingPhoto && heroTransition == nil
+  }
+
   private var browserOpacity: Double {
     if heroTransition != nil {
       return 1
     }
-    return appState.isViewingPhoto ? 0 : 1
+    return appState.isViewingPhoto ? Double(interactiveDismissPresentation.progress) : 1
   }
 
   private var viewerOpacity: Double {
@@ -213,6 +366,7 @@ struct MainContentView: View {
     switch appState.sidebarSelection {
     case .library: "Library"
     case .collections: "Collections"
+    case .map: "Map"
     case .favorites: "Favorites"
     case .videos: "Videos"
     case .livePhotos: "Live Photos"
@@ -221,11 +375,11 @@ struct MainContentView: View {
     case .imports: "Imports"
     case .recentlyDeleted: "Recently Deleted"
     case .allAlbums: "Albums"
+    case .allPeople: "People"
+    case .allMemories: "Memories"
     case .album(let id): appState.albums.first(where: { $0.id == id })?.albumName ?? "Album"
     case .pinnedAlbum(let id): appState.albums.first(where: { $0.id == id })?.albumName ?? "Album"
     case .person(let id): appState.people.first(where: { $0.id == id })?.name ?? "Person"
-    case .sharedLinks: "Shared Links"
-    case .sharedLink(let id): appState.sharedLinks.first(where: { $0.id == id })?.description ?? "Shared Link"
     case .memory(let id): appState.memories.first(where: { $0.id == id })?.title ?? "Memory"
     case .none: "Library"
     }
@@ -238,10 +392,18 @@ struct MainContentView: View {
     switch appState.sidebarSelection {
     case .collections:
       CollectionsView(appState: appState, thumbnailStore: thumbnailStore)
-    case .sharedLinks:
-      SharedLinksView(appState: appState)
+    case .map:
+      MapBrowserView(
+        appState: appState,
+        thumbnailStore: thumbnailStore,
+        onOpenAsset: handleOpenAsset
+      )
     case .allAlbums:
       AllAlbumsView(appState: appState, thumbnailStore: thumbnailStore)
+    case .allPeople:
+      AllPeopleView(appState: appState, thumbnailStore: thumbnailStore)
+    case .allMemories:
+      AllMemoriesView(appState: appState, thumbnailStore: thumbnailStore)
     case .album(let id), .pinnedAlbum(let id):
       LibraryGridView(
         appState: appState,
@@ -260,15 +422,6 @@ struct MainContentView: View {
         onHeroFramesChanged: { heroItemFrames = $0 }
       )
         .task(id: id) { await appState.loadPerson(id) }
-    case .sharedLink(let id):
-      LibraryGridView(
-        appState: appState,
-        thumbnailStore: thumbnailStore,
-        heroHiddenItemID: activeHeroHiddenItemID,
-        onOpenAsset: handleOpenAsset,
-        onHeroFramesChanged: { heroItemFrames = $0 }
-      )
-        .task(id: id) { appState.loadSharedLink(id) }
     case .memory(let id):
       LibraryGridView(
         appState: appState,
@@ -286,6 +439,15 @@ struct MainContentView: View {
         onOpenAsset: handleOpenAsset,
         onHeroFramesChanged: { heroItemFrames = $0 }
       )
+    case .screenshots:
+      LibraryGridView(
+        appState: appState,
+        thumbnailStore: thumbnailStore,
+        heroHiddenItemID: activeHeroHiddenItemID,
+        onOpenAsset: handleOpenAsset,
+        onHeroFramesChanged: { heroItemFrames = $0 }
+      )
+        .task { await appState.loadScreenshots() }
     default:
       LibraryGridView(
         appState: appState,
@@ -301,6 +463,42 @@ struct MainContentView: View {
 
   @ToolbarContentBuilder
   private var browserToolbar: some ToolbarContent {
+    // Left: Zoom −/+ capsule
+    ToolbarItem(placement: .navigation) {
+      if showsPhotoGridZoomControl {
+        PhotoGridZoomControl(
+          canZoomOut: appState.canZoomOutPhotoGrid,
+          canZoomIn: appState.canZoomInPhotoGrid,
+          onZoomOut: appState.zoomOutPhotoGrid,
+          onZoomIn: appState.zoomInPhotoGrid
+        )
+      }
+    }
+
+    // Center: Years | Months | All Photos segmented control (Library only)
+    ToolbarItem(placement: .principal) {
+      if showsTimelineViewModePicker {
+        Picker("", selection: $appState.timelineViewMode) {
+          ForEach(AppState.TimelineViewMode.allCases) { mode in
+            Text(mode.rawValue).tag(mode)
+          }
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 240)
+      }
+    }
+
+    // Right: Search field
+    ToolbarItem(placement: .automatic) {
+      ToolbarSearchField(
+        text: $appState.searchText,
+        isPresented: $isSearchPresented,
+        searchType: $appState.searchType,
+        searchFilters: $appState.searchFilters
+      )
+    }
+
+    // Right: Action buttons grouped in capsule pill
     ToolbarItemGroup(placement: .primaryAction) {
       if appState.isMultiSelectMode {
         Text("\(appState.selectedItemIDs.count) selected")
@@ -318,49 +516,27 @@ struct MainContentView: View {
         }
         .help(appState.allItemsSelected ? "Deselect All" : "Select All")
 
-        Button {
-          appState.batchFavorite()
-        } label: {
-          Image(systemName: "heart")
-        }
-        .help("Favorite Selected")
-        .disabled(appState.selectedItemIDs.isEmpty)
-
-        Button {
-          appState.batchDownload()
-        } label: {
-          Image(systemName: "arrow.down.circle")
-        }
-        .help("Download Selected")
-        .disabled(appState.selectedItemIDs.isEmpty)
-
-        Button {
-          appState.showAddToAlbumSheet = true
-        } label: {
-          Image(systemName: "rectangle.stack.badge.plus")
-        }
-        .help("Add to Album")
-        .disabled(appState.selectedItemIDs.isEmpty)
-
-        Button {
-          appState.presentTagEditor(
-            for: Array(appState.selectedItemIDs),
-            currentTags: [],
-            title: "Tag Selected Items"
-          )
-        } label: {
-          Image(systemName: "tag")
-        }
-        .help("Add Tags")
-        .disabled(appState.selectedItemIDs.isEmpty)
-
-        Button {
-          appState.batchTrash()
-        } label: {
-          Image(systemName: "trash")
-        }
-        .help("Trash Selected")
-        .disabled(appState.selectedItemIDs.isEmpty)
+        ToolbarActionGroup(actions: [
+          .init(icon: "heart", help: "Favorite Selected", enabled: !appState.selectedItemIDs.isEmpty) {
+            appState.batchFavorite()
+          },
+          .init(icon: "arrow.down.circle", help: "Download Selected", enabled: !appState.selectedItemIDs.isEmpty) {
+            appState.batchDownload()
+          },
+          .init(icon: "rectangle.stack.badge.plus", help: "Add to Album", enabled: !appState.selectedItemIDs.isEmpty) {
+            appState.showAddToAlbumSheet = true
+          },
+          .init(icon: "tag", help: "Add Tags", enabled: !appState.selectedItemIDs.isEmpty) {
+            appState.presentTagEditor(
+              for: Array(appState.selectedItemIDs),
+              currentTags: [],
+              title: "Tag Selected Items"
+            )
+          },
+          .init(icon: "trash", help: "Trash Selected", enabled: !appState.selectedItemIDs.isEmpty) {
+            appState.batchTrash()
+          },
+        ])
       }
 
       Button {
@@ -369,6 +545,17 @@ struct MainContentView: View {
         Image(systemName: appState.isMultiSelectMode ? "checkmark.circle.fill" : "checkmark.circle")
       }
       .help(appState.isMultiSelectMode ? "Exit Selection" : "Select Multiple")
+      .accessibilityLabel(appState.isMultiSelectMode ? "Exit Selection" : "Select Multiple")
+
+      Button {
+        thumbnailStore.logTelemetry(reason: "pre_refresh")
+        Task { await appState.loadRemoteTimeline(reset: true) }
+      } label: {
+        Image(systemName: "arrow.clockwise")
+      }
+      .help("Refresh Library")
+      .accessibilityLabel("Refresh Library")
+      .disabled(appState.isLoadingTimeline)
 
       Button {
         importFromFinder()
@@ -376,15 +563,7 @@ struct MainContentView: View {
         Image(systemName: "plus")
       }
       .help("Import Files")
-
-      if showsPhotoGridZoomControl {
-        PhotoGridZoomControl(
-          canZoomOut: appState.canZoomOutPhotoGrid,
-          canZoomIn: appState.canZoomInPhotoGrid,
-          onZoomOut: appState.zoomOutPhotoGrid,
-          onZoomIn: appState.zoomInPhotoGrid
-        )
-      }
+      .accessibilityLabel("Import Files")
 
       // View options
       Menu {
@@ -410,9 +589,10 @@ struct MainContentView: View {
         }
         .disabled(true)
       } label: {
-        Image(systemName: "line.3.horizontal.decrease.circle")
+        Image(systemName: "ellipsis.circle")
       }
-      .help("Filter & Sort")
+      .help("More Options")
+      .accessibilityLabel("More Options")
     }
   }
 
@@ -428,6 +608,7 @@ struct MainContentView: View {
           .font(.system(size: 16, weight: .medium))
       }
       .help("Back to Library")
+      .accessibilityLabel("Back to Library")
     }
 
     ToolbarItem(placement: .principal) {
@@ -451,16 +632,18 @@ struct MainContentView: View {
             .foregroundColor(item.isFavorite ? .red : nil)
         }
         .help(item.isFavorite ? "Remove from Favorites" : "Add to Favorites")
+        .accessibilityLabel(item.isFavorite ? "Remove from Favorites" : "Add to Favorites")
 
         if !item.isVideo {
           Button {
-            withAnimation(.easeInOut(duration: 0.25)) {
+            withAnimation(ImmichMotion.Curves.structuralMedium) {
               appState.isEditing.toggle()
             }
           } label: {
             Image(systemName: "slider.horizontal.3")
           }
           .help("Edit")
+          .accessibilityLabel("Edit")
         }
 
         Button {
@@ -468,9 +651,7 @@ struct MainContentView: View {
         } label: {
           Image(systemName: "info.circle")
         }
-        .popover(isPresented: $appState.showInfoPopover, arrowEdge: .bottom) {
-          AssetInfoInspector(appState: appState, item: item)
-        }
+        .accessibilityLabel("Show Info")
 
         Button {
           Task {
@@ -480,6 +661,7 @@ struct MainContentView: View {
           Image(systemName: "tag")
         }
         .help("Edit Tags")
+        .accessibilityLabel("Edit Tags")
 
         Button {
           appState.downloadAsset(item.id)
@@ -487,6 +669,7 @@ struct MainContentView: View {
           Image(systemName: "arrow.down.circle")
         }
         .help("Download Original")
+        .accessibilityLabel("Download Original")
         .disabled(appState.isDownloading)
 
         ShareButton(appState: appState, assetID: item.id)
@@ -497,11 +680,29 @@ struct MainContentView: View {
           Image(systemName: "trash")
         }
         .help("Move to Trash")
+        .accessibilityLabel("Move to Trash")
       }
     }
   }
 
   // MARK: - Helpers
+
+  private func dismissSearchFieldFocus() {
+    NSApp.keyWindow?.makeFirstResponder(nil)
+    if isSearchPresented && appState.searchText.isEmpty {
+      withAnimation(ImmichMotion.Curves.searchSpring) {
+        isSearchPresented = false
+      }
+    }
+  }
+
+  private func syncAssetInfoPanel() {
+    guard appState.showInfoPopover, let item = appState.selectedItem else {
+      assetInfoPanelController.close()
+      return
+    }
+    assetInfoPanelController.present(appState: appState, item: item)
+  }
 
   private func importFromFinder() {
     let panel = NSOpenPanel()
@@ -518,9 +719,10 @@ struct MainContentView: View {
     appState.selectedItemID = item.id
     appState.isViewingLivePhoto = false
     appState.isEditing = false
+    interactiveDismissPresentation = .identity
 
     guard let sourceImage, sourceFrame != .zero else {
-      withAnimation(.spring(response: 0.35, dampingFraction: 0.88)) {
+      withAnimation(ImmichMotion.Curves.heroFallbackOpen) {
         appState.isViewingPhoto = true
       }
       return
@@ -531,29 +733,30 @@ struct MainContentView: View {
       direction: .opening,
       sourceFrame: sourceFrame,
       image: sourceImage,
-      aspectRatio: preferredHeroAspectRatio(for: item, image: sourceImage)
+      aspectRatio: preferredHeroAspectRatio(for: item, image: sourceImage),
+      expandedPresentation: .identity
     )
     isHeroExpanded = false
 
-    withAnimation(.easeOut(duration: 0.12)) {
+    withAnimation(ImmichMotion.Curves.heroReveal) {
       appState.isViewingPhoto = true
     }
 
     DispatchQueue.main.async {
       guard heroTransition?.itemID == item.id else { return }
-      withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
+      withAnimation(ImmichMotion.Curves.heroExpand) {
         isHeroExpanded = true
       }
     }
 
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + ImmichMotion.Timing.heroOpenCleanupDelay) {
       guard heroTransition?.itemID == item.id else { return }
       heroTransition = nil
       isHeroExpanded = false
     }
   }
 
-  private func closeViewer() {
+  private func closeViewer(_ presentation: InteractiveDismissPresentation = .identity) {
     guard appState.isViewingPhoto else { return }
 
     appState.isViewingLivePhoto = false
@@ -564,33 +767,40 @@ struct MainContentView: View {
           destinationFrame != .zero,
           let heroImage = bestAvailableHeroImage(for: item)
     else {
-      withAnimation(.easeOut(duration: 0.18)) {
+      withAnimation(ImmichMotion.Curves.heroFallbackClose) {
         appState.isViewingPhoto = false
       }
+      interactiveDismissPresentation = .identity
       return
     }
+
+    let expandedPresentation = presentation.isInteractive
+      ? presentation
+      : .identity
 
     heroTransition = HeroTransitionState(
       itemID: item.id,
       direction: .closing,
       sourceFrame: destinationFrame,
       image: heroImage,
-      aspectRatio: preferredHeroAspectRatio(for: item, image: heroImage)
+      aspectRatio: preferredHeroAspectRatio(for: item, image: heroImage),
+      expandedPresentation: expandedPresentation
     )
     isHeroExpanded = true
 
     DispatchQueue.main.async {
       guard heroTransition?.itemID == item.id else { return }
-      withAnimation(.spring(response: 0.36, dampingFraction: 0.9)) {
+      withAnimation(ImmichMotion.Curves.heroCollapse) {
         appState.isViewingPhoto = false
         isHeroExpanded = false
       }
     }
 
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.38) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + ImmichMotion.Timing.heroCloseCleanupDelay) {
       guard heroTransition?.itemID == item.id else { return }
       heroTransition = nil
       isHeroExpanded = false
+      interactiveDismissPresentation = .identity
     }
   }
 
@@ -600,10 +810,12 @@ struct MainContentView: View {
   }
 
   private func bestAvailableHeroImage(for item: AppState.PhotoItem) -> NSImage? {
-    thumbnailStore.cachedImage(for: item, context: appState.thumbnailContext, size: .original)
+    // Prefer smaller decoded images for hero transitions to keep open/close animations
+    // responsive even when full-resolution assets are loaded in the detail view.
+    thumbnailStore.cachedImage(for: item, context: appState.thumbnailContext, size: .thumbnail)
       ?? thumbnailStore.cachedImage(for: item, context: appState.thumbnailContext, size: .preview)
-      ?? thumbnailStore.cachedImage(for: item, context: appState.thumbnailContext, size: .thumbnail)
       ?? heroTransition?.image
+      ?? thumbnailStore.cachedImage(for: item, context: appState.thumbnailContext, size: .original)
   }
 
   private func preferredHeroAspectRatio(for item: AppState.PhotoItem, image: NSImage?) -> CGFloat {
@@ -623,11 +835,16 @@ struct MainContentView: View {
 
   private var showsPhotoGridZoomControl: Bool {
     switch appState.sidebarSelection {
-    case .collections, .sharedLinks, .allAlbums:
+    case .collections, .map, .allAlbums, .allPeople, .allMemories:
       return false
     default:
       return true
     }
+  }
+
+  private var showsTimelineViewModePicker: Bool {
+    (appState.sidebarSelection == .library || appState.sidebarSelection == nil)
+    && !appState.isViewingPhoto
   }
 
   private func installSpacebarHandler() {
@@ -679,91 +896,6 @@ struct MainContentView: View {
   }
 }
 
-// MARK: - Shared Links View (simple list)
-
-struct SharedLinksView: View {
-  @ObservedObject var appState: AppState
-  @State private var isLoading = true
-  @State private var loadError: String?
-
-  var body: some View {
-    Group {
-      if isLoading {
-        VStack(spacing: 12) {
-          ProgressView().controlSize(.large)
-          Text("Loading shared links…")
-            .font(.title3.weight(.medium))
-            .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-      } else if appState.sharedLinks.isEmpty {
-        VStack(spacing: 12) {
-          Image(systemName: "link")
-            .font(.system(size: 42, weight: .light))
-            .foregroundStyle(.quaternary)
-          Text("No shared links")
-            .font(.title3.weight(.medium))
-            .foregroundStyle(.secondary)
-          if let loadError {
-            Text(loadError)
-              .font(.caption)
-              .foregroundStyle(.tertiary)
-              .multilineTextAlignment(.center)
-              .frame(maxWidth: 300)
-          }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-      } else {
-        List(appState.sharedLinks) { link in
-          Button {
-            if link.type == "ALBUM", let albumId = link.albumId {
-              appState.sidebarSelection = .album(id: albumId)
-            } else {
-              appState.sidebarSelection = .sharedLink(id: link.id)
-            }
-          } label: {
-            HStack {
-              Image(systemName: link.type == "ALBUM" ? "rectangle.stack" : "photo.on.rectangle")
-                .foregroundStyle(.secondary)
-                .frame(width: 24)
-
-              VStack(alignment: .leading, spacing: 2) {
-                Text(link.description ?? String(link.key.prefix(12)) + "…")
-                  .font(.subheadline)
-                Text("\(link.assetCount) items")
-                  .font(.caption)
-                  .foregroundStyle(.secondary)
-              }
-
-              Spacer()
-
-              if let expires = link.expiresAt {
-                Text("Expires \(expires, style: .relative)")
-                  .font(.caption2)
-                  .foregroundStyle(.tertiary)
-              }
-
-              Image(systemName: "chevron.right")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-            }
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
-          }
-          .buttonStyle(.plain)
-        }
-      }
-    }
-    .task {
-      isLoading = true
-      loadError = nil
-      let error = await appState.reloadSharedLinks()
-      loadError = error
-      isLoading = false
-    }
-  }
-}
-
 // MARK: - All Albums View (grid of all albums)
 
 struct AllAlbumsView: View {
@@ -802,6 +934,72 @@ struct AllAlbumsView: View {
                 Task { await appState.deleteAlbum(album.id) }
               }
             }
+          }
+        }
+        .padding(20)
+      }
+    }
+  }
+}
+
+struct AllPeopleView: View {
+  @ObservedObject var appState: AppState
+  @ObservedObject var thumbnailStore: ThumbnailStore
+
+  private var visiblePeople: [Person] {
+    appState.people.filter { !$0.isHidden }
+  }
+
+  var body: some View {
+    if visiblePeople.isEmpty {
+      VStack(spacing: 12) {
+        Image(systemName: "person.2")
+          .font(.system(size: 42, weight: .light))
+          .foregroundStyle(.quaternary)
+        Text("No people")
+          .font(.title3.weight(.medium))
+          .foregroundStyle(.secondary)
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+    } else {
+      ScrollView {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 110, maximum: 130), spacing: 16)], spacing: 20) {
+          ForEach(visiblePeople) { person in
+            PersonCard(person: person, context: appState.thumbnailContext, thumbnailStore: thumbnailStore)
+              .onTapGesture {
+                appState.sidebarSelection = .person(id: person.id)
+              }
+          }
+        }
+        .padding(20)
+      }
+    }
+  }
+}
+
+struct AllMemoriesView: View {
+  @ObservedObject var appState: AppState
+  @ObservedObject var thumbnailStore: ThumbnailStore
+
+  var body: some View {
+    if appState.memories.isEmpty {
+      VStack(spacing: 12) {
+        Image(systemName: "memories")
+          .font(.system(size: 42, weight: .light))
+          .foregroundStyle(.quaternary)
+        Text("No memories")
+          .font(.title3.weight(.medium))
+          .foregroundStyle(.secondary)
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+    } else {
+      ScrollView {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 200, maximum: 240), spacing: 16)], spacing: 16) {
+          ForEach(appState.memories) { memory in
+            MemoryCard(memory: memory, context: appState.thumbnailContext, thumbnailStore: thumbnailStore)
+              .onTapGesture {
+                appState.sidebarSelection = .memory(id: memory.id)
+              }
           }
         }
         .padding(20)
@@ -869,6 +1067,7 @@ struct RecentlyDeletedView: View {
                 thumbnailStore: thumbnailStore,
                 onSelect: { appState.selectedItemID = item.id },
                 onOpen: { _, sourceFrame, sourceImage in onOpenAsset(item, sourceFrame, sourceImage) },
+                onGetInfo: { appState.presentInfo(for: item.id) },
                 onFavoriteToggle: {},
                 onMultiSelectToggle: {}
               )
@@ -881,6 +1080,7 @@ struct RecentlyDeletedView: View {
           .padding(.vertical, appState.photoGridPadding)
         }
         .onPreferenceChange(PhotoHeroSourceFramePreferenceKey.self) { onHeroFramesChanged($0) }
+        .onTapGesture { appState.selectedItemID = nil }
       }
     }
     .task { await appState.loadTrashedAssets() }
@@ -898,14 +1098,18 @@ struct PhotoGridZoomControl: View {
       toolbarButton(systemName: "minus", isEnabled: canZoomOut, action: onZoomOut)
         .help("Show More Photos")
 
-      Rectangle()
-        .fill(.quaternary)
-        .frame(width: 1, height: 16)
+      ZStack {
+        Rectangle()
+          .fill(.quaternary)
+          .frame(width: 1, height: 18)
+      }
+      .frame(width: 10, height: 28)
 
       toolbarButton(systemName: "plus", isEnabled: canZoomIn, action: onZoomIn)
         .help("Show Fewer Photos")
     }
-    .padding(2)
+    .frame(height: 32)
+    .padding(3)
     .background(.ultraThinMaterial, in: Capsule(style: .continuous))
     .overlay {
       Capsule(style: .continuous)
@@ -917,12 +1121,62 @@ struct PhotoGridZoomControl: View {
     Button(action: action) {
       Image(systemName: systemName)
         .font(.system(size: 11, weight: .semibold))
-        .frame(width: 28, height: 24)
+        .frame(width: 32, height: 26)
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .foregroundStyle(isEnabled ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
     .disabled(!isEnabled)
+  }
+}
+
+struct ToolbarActionGroup: View {
+  struct Action: Identifiable {
+    let id: String
+    let icon: String
+    let help: String
+    let enabled: Bool
+    let action: () -> Void
+
+    init(icon: String, help: String, enabled: Bool = true, action: @escaping () -> Void) {
+      self.id = icon
+      self.icon = icon
+      self.help = help
+      self.enabled = enabled
+      self.action = action
+    }
+  }
+
+  let actions: [Action]
+
+  var body: some View {
+    HStack(spacing: 0) {
+      ForEach(Array(actions.enumerated()), id: \.element.id) { index, item in
+        if index > 0 {
+          Rectangle()
+            .fill(.quaternary)
+            .frame(width: 1, height: 16)
+        }
+
+        Button(action: item.action) {
+          Image(systemName: item.icon)
+            .font(.system(size: 11, weight: .semibold))
+            .frame(width: 28, height: 24)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(item.enabled ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
+        .disabled(!item.enabled)
+        .help(item.help)
+        .accessibilityLabel(Text(item.help))
+      }
+    }
+    .padding(2)
+    .background(.ultraThinMaterial, in: Capsule(style: .continuous))
+    .overlay {
+      Capsule(style: .continuous)
+        .strokeBorder(.quaternary.opacity(0.9))
+    }
   }
 }
 
@@ -932,12 +1186,12 @@ private struct HeroOpenOverlay: View {
 
   var body: some View {
     GeometryReader { proxy in
-      let targetFrame = targetFrame(in: proxy.size)
-      let activeFrame = isExpanded ? targetFrame : heroState.sourceFrame
+      let expandedFrame = expandedFrame(in: proxy.size)
+      let activeFrame = isExpanded ? expandedFrame : heroState.sourceFrame
 
       ZStack(alignment: .topLeading) {
         Color.black
-          .opacity(isExpanded ? 0.96 : 0)
+          .opacity(isExpanded ? heroState.expandedPresentation.backdropOpacity : 0)
           .ignoresSafeArea()
 
         Image(nsImage: heroState.image)
@@ -970,6 +1224,17 @@ private struct HeroOpenOverlay: View {
 
     let origin = CGPoint(x: (size.width - width) / 2, y: (size.height - height) / 2)
     return CGRect(origin: origin, size: CGSize(width: width, height: height))
+  }
+
+  private func expandedFrame(in size: CGSize) -> CGRect {
+    let targetFrame = targetFrame(in: size)
+    let scaledWidth = targetFrame.width * heroState.expandedPresentation.scale
+    let scaledHeight = targetFrame.height * heroState.expandedPresentation.scale
+    let origin = CGPoint(
+      x: targetFrame.midX - (scaledWidth / 2) + heroState.expandedPresentation.offset.width,
+      y: targetFrame.midY - (scaledHeight / 2) + heroState.expandedPresentation.offset.height
+    )
+    return CGRect(origin: origin, size: CGSize(width: scaledWidth, height: scaledHeight))
   }
 }
 
@@ -1151,4 +1416,52 @@ struct AddToAlbumSheet: View {
     .frame(width: 380)
   }
 }
+// MARK: - Upload Failure Banner
+
+struct UploadFailureBanner: View {
+  let filename: String
+  let reason: String
+  let onDismiss: () -> Void
+
+  var body: some View {
+    HStack(spacing: 10) {
+      Image(systemName: "exclamationmark.triangle.fill")
+        .foregroundStyle(.yellow)
+        .font(.system(size: 16))
+        .accessibilityHidden(true)
+
+      VStack(alignment: .leading, spacing: 2) {
+        Text("Upload failed: \(filename)")
+          .font(.callout.weight(.medium))
+          .lineLimit(1)
+        Text(reason)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .lineLimit(2)
+      }
+
+      Spacer()
+
+      Button {
+        onDismiss()
+      } label: {
+        Image(systemName: "xmark.circle.fill")
+          .font(.system(size: 14))
+          .foregroundStyle(.secondary)
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Dismiss")
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 10)
+    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .overlay {
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .strokeBorder(.quaternary)
+    }
+    .shadow(color: .black.opacity(0.12), radius: 8, y: 4)
+    .frame(maxWidth: 420)
+  }
+}
+
 #endif

@@ -42,6 +42,16 @@ public struct ServerInfo: Decodable, Sendable {
   }
 }
 
+public struct VersionCheckState: Decodable, Sendable {
+  public let checkedAt: String?
+  public let releaseVersion: String?
+
+  public init(checkedAt: String? = nil, releaseVersion: String? = nil) {
+    self.checkedAt = checkedAt
+    self.releaseVersion = releaseVersion
+  }
+}
+
 public struct ServerLoginConfiguration: Sendable {
   public let isInitialized: Bool
   public let isOnboarded: Bool
@@ -373,7 +383,6 @@ public struct Album: Identifiable, Hashable, Sendable {
   public let updatedAt: Date
   public let isActivityEnabled: Bool
   public let shared: Bool
-  public let hasSharedLink: Bool
   public let ownerID: String
 
   public init(
@@ -386,7 +395,6 @@ public struct Album: Identifiable, Hashable, Sendable {
     updatedAt: Date,
     isActivityEnabled: Bool,
     shared: Bool,
-    hasSharedLink: Bool,
     ownerID: String
   ) {
     self.id = id
@@ -398,7 +406,6 @@ public struct Album: Identifiable, Hashable, Sendable {
     self.updatedAt = updatedAt
     self.isActivityEnabled = isActivityEnabled
     self.shared = shared
-    self.hasSharedLink = hasSharedLink
     self.ownerID = ownerID
   }
 }
@@ -432,13 +439,49 @@ public struct Person: Identifiable, Hashable, Sendable {
 
 // MARK: - Search
 
+public enum SearchType: String, CaseIterable, Identifiable, Sendable {
+  case smart = "Smart"
+  case filename = "Filename"
+  case description = "Description"
+  case ocr = "OCR"
+
+  public var id: String { rawValue }
+}
+
+public struct SearchFilters: Sendable {
+  public var cameraMake: String?
+  public var cameraModel: String?
+  public var city: String?
+  public var country: String?
+  public var takenAfter: Date?
+  public var takenBefore: Date?
+  public var mediaType: MediaType?
+  public var isFavorite: Bool?
+
+  public enum MediaType: String, CaseIterable, Identifiable, Sendable {
+    case all = "All"
+    case image = "Image"
+    case video = "Video"
+    public var id: String { rawValue }
+  }
+
+  public init() {}
+
+  public var isEmpty: Bool {
+    cameraMake == nil && cameraModel == nil && city == nil && country == nil
+      && takenAfter == nil && takenBefore == nil && mediaType == nil && isFavorite == nil
+  }
+}
+
 public struct SearchResult: Sendable {
   public let assets: [RemoteTimelineAsset]
   public let totalCount: Int
+  public let nextPage: String?
 
-  public init(assets: [RemoteTimelineAsset], totalCount: Int) {
+  public init(assets: [RemoteTimelineAsset], totalCount: Int, nextPage: String? = nil) {
     self.assets = assets
     self.totalCount = totalCount
+    self.nextPage = nextPage
   }
 }
 
@@ -572,41 +615,6 @@ public struct ExifInfo: Sendable {
     self.description = description
     self.rating = rating
     self.dateTimeOriginal = dateTimeOriginal
-  }
-}
-
-// MARK: - Shared Links
-
-public struct SharedLink: Identifiable, Hashable, Sendable {
-  public let id: String
-  public let type: String
-  public let key: String
-  public let description: String?
-  public let expiresAt: Date?
-  public let allowUpload: Bool
-  public let allowDownload: Bool
-  public let assetCount: Int
-  public let albumId: String?
-  public let createdAt: Date
-  public let assetIds: [String]
-
-  public init(
-    id: String, type: String, key: String, description: String?,
-    expiresAt: Date?, allowUpload: Bool, allowDownload: Bool,
-    assetCount: Int, albumId: String?, createdAt: Date,
-    assetIds: [String] = []
-  ) {
-    self.id = id
-    self.type = type
-    self.key = key
-    self.description = description
-    self.expiresAt = expiresAt
-    self.allowUpload = allowUpload
-    self.allowDownload = allowDownload
-    self.assetCount = assetCount
-    self.albumId = albumId
-    self.createdAt = createdAt
-    self.assetIds = assetIds
   }
 }
 

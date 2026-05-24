@@ -44,7 +44,7 @@ struct EditingSidebar: View {
       // Bottom bar
       HStack {
         Button("Auto") {
-          withAnimation(.easeInOut(duration: 0.3)) {
+          withAnimation(ImmichMotion.Curves.searchSpring) {
             pipeline.autoEnhance()
           }
         }
@@ -54,7 +54,7 @@ struct EditingSidebar: View {
         Spacer()
 
         Button("Reset") {
-          withAnimation(.easeInOut(duration: 0.2)) {
+          withAnimation(ImmichMotion.Curves.structuralShort) {
             pipeline.resetAll()
           }
         }
@@ -75,7 +75,7 @@ struct EditingSidebar: View {
 
           Divider()
           Button("Revert to Original") {
-            withAnimation(.easeInOut(duration: 0.2)) {
+            withAnimation(ImmichMotion.Curves.structuralShort) {
               pipeline.resetAll()
             }
           }
@@ -86,7 +86,7 @@ struct EditingSidebar: View {
         .disabled(!canSaveEdits)
 
         Button("Done") {
-          withAnimation(.easeInOut(duration: 0.2)) {
+          withAnimation(ImmichMotion.Curves.structuralShort) {
             appState.isEditing = false
           }
         }
@@ -159,7 +159,7 @@ struct EditingSidebar: View {
               .lineLimit(1)
           }
           .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.15)) {
+            withAnimation(ImmichMotion.Curves.interactiveFast) {
               pipeline.selectedFilter = preset
             }
           }
@@ -199,6 +199,7 @@ struct EditingSidebar: View {
           Image(systemName: "rotate.left")
         }
         .help("Rotate Left 90°")
+        .accessibilityLabel("Rotate Left 90°")
 
         Button {
           pipeline.rotateRight()
@@ -206,6 +207,7 @@ struct EditingSidebar: View {
           Image(systemName: "rotate.right")
         }
         .help("Rotate Right 90°")
+        .accessibilityLabel("Rotate Right 90°")
 
         Button {
           pipeline.flipHorizontal.toggle()
@@ -214,6 +216,7 @@ struct EditingSidebar: View {
             .foregroundStyle(pipeline.flipHorizontal ? Color.accentColor : .primary)
         }
         .help("Flip Horizontal")
+        .accessibilityLabel("Flip Horizontal")
 
         Button {
           pipeline.flipVertical.toggle()
@@ -222,6 +225,7 @@ struct EditingSidebar: View {
             .foregroundStyle(pipeline.flipVertical ? Color.accentColor : .primary)
         }
         .help("Flip Vertical")
+        .accessibilityLabel("Flip Vertical")
       }
       .buttonStyle(.bordered)
     }

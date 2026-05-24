@@ -31,3 +31,7 @@ vite.config.js.timestamp-*
 
 # SwiftPM build artifacts
 desktop-macos/.build/
+
+**/AGENTS.md
+
+.openclaude-profile.json

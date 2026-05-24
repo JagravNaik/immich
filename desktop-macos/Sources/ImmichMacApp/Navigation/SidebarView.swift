@@ -7,6 +7,7 @@ enum SidebarDestination: Hashable {
   // Top-level
   case library
   case collections
+  case map
 
   // Pinned
   case pinnedAlbum(id: String)
@@ -14,6 +15,9 @@ enum SidebarDestination: Hashable {
   // Albums
   case allAlbums
   case album(id: String)
+
+  case allPeople
+  case allMemories
 
   // People
   case person(id: String)
@@ -29,10 +33,6 @@ enum SidebarDestination: Hashable {
   case recentlyDeleted
   case favorites
 
-  // Sharing
-  case sharedLinks
-  case sharedLink(id: String)
-
   // Memories
   case memory(id: String)
 
@@ -40,9 +40,12 @@ enum SidebarDestination: Hashable {
     switch self {
     case .library: "Library"
     case .collections: "Collections"
+    case .map: "Map"
     case .pinnedAlbum: "Pinned Album"
     case .allAlbums: "All Albums"
     case .album: "Album"
+    case .allPeople: "People"
+    case .allMemories: "Memories"
     case .person: "Person"
     case .videos: "Videos"
     case .livePhotos: "Live Photos"
@@ -51,8 +54,6 @@ enum SidebarDestination: Hashable {
     case .imports: "Imports"
     case .recentlyDeleted: "Recently Deleted"
     case .favorites: "Favorites"
-    case .sharedLinks: "Shared Links"
-    case .sharedLink: "Shared Link"
     case .memory: "Memory"
     }
   }
@@ -61,9 +62,12 @@ enum SidebarDestination: Hashable {
     switch self {
     case .library: "photo.on.rectangle.angled"
     case .collections: "square.grid.2x2"
+    case .map: "map"
     case .pinnedAlbum: "pin.fill"
     case .allAlbums: "rectangle.stack"
     case .album: "rectangle.stack"
+    case .allPeople: "person.2"
+    case .allMemories: "memories"
     case .person: "person.crop.circle"
     case .videos: "video"
     case .livePhotos: "livephoto"
@@ -72,8 +76,6 @@ enum SidebarDestination: Hashable {
     case .imports: "square.and.arrow.down"
     case .recentlyDeleted: "trash"
     case .favorites: "heart"
-    case .sharedLinks: "link"
-    case .sharedLink: "link"
     case .memory: "memories"
     }
   }
@@ -86,7 +88,6 @@ struct SidebarSectionState {
   var isAlbumsExpanded = true
   var isMediaTypesExpanded = true
   var isUtilitiesExpanded = true
-  var isSharingExpanded = true
 }
 
 // MARK: - Sidebar View
@@ -115,9 +116,6 @@ struct SidebarView: View {
       // Utilities
       utilitiesSection
 
-      // Sharing
-      sharingSection
-
       // Account (at bottom)
       accountSection
     }
@@ -138,6 +136,10 @@ struct SidebarView: View {
       Label("Collections", systemImage: "square.grid.2x2")
         .tag(SidebarDestination.collections)
         .fontWeight(selection == .collections ? .semibold : .regular)
+
+      Label("Map", systemImage: "map")
+        .tag(SidebarDestination.map)
+        .fontWeight(selection == .map ? .semibold : .regular)
     }
   }
 
@@ -163,8 +165,8 @@ struct SidebarView: View {
 
       ForEach(appState.albums.prefix(8)) { album in
         Label(album.albumName, systemImage: album.shared ? "rectangle.stack.person.crop" : "rectangle.stack")
-          .tag(SidebarDestination.album(id: album.id))
           .badge(album.assetCount)
+          .tag(SidebarDestination.album(id: album.id))
       }
     } header: {
       sectionHeader("Albums", isExpanded: $sectionState.isAlbumsExpanded)
@@ -213,18 +215,6 @@ struct SidebarView: View {
     }
   }
 
-  // MARK: - Sharing Section
-
-  private var sharingSection: some View {
-    Section(isExpanded: $sectionState.isSharingExpanded) {
-      Label("Shared Links", systemImage: "link")
-        .tag(SidebarDestination.sharedLinks)
-        .badge(appState.sharedLinks.count)
-    } header: {
-      sectionHeader("Sharing", isExpanded: $sectionState.isSharingExpanded)
-    }
-  }
-
   // MARK: - Account Section
 
   private var accountSection: some View {
@@ -236,7 +226,7 @@ struct SidebarView: View {
           Text(session.userEmail)
             .font(.caption)
             .foregroundStyle(.secondary)
-          Label(session.authenticationModeLabel, systemImage: session.usesAPIKey ? "key.fill" : "person.crop.circle.badge.checkmark")
+          Label(accountAuthenticationModeLabel, systemImage: accountAuthenticationModeIcon)
             .font(.caption2)
             .foregroundStyle(.tertiary)
         }
@@ -284,6 +274,20 @@ struct SidebarView: View {
     }
   }
 
+  private var accountAuthenticationModeLabel: String {
+    if appState.isOAuthSession {
+      return "OAuth"
+    }
+    return appState.currentSession?.authenticationModeLabel ?? "Password"
+  }
+
+  private var accountAuthenticationModeIcon: String {
+    if appState.isOAuthSession {
+      return "globe"
+    }
+    return appState.currentSession?.usesAPIKey == true ? "key.fill" : "person.crop.circle.badge.checkmark"
+  }
+
   // MARK: - Status Bar
 
   private var statusBar: some View {
@@ -309,7 +313,7 @@ struct SidebarView: View {
     }
     .contentShape(Rectangle())
     .onTapGesture {
-      withAnimation(.easeInOut(duration: 0.2)) {
+      withAnimation(ImmichMotion.Curves.structuralShort) {
         isExpanded.wrappedValue.toggle()
       }
     }

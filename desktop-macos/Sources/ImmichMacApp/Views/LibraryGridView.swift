@@ -3,6 +3,7 @@ import SwiftUI
 import AppKit
 
 private let photoGridCoordinateSpace = "ImmichPhotoGrid"
+private let libraryTopAnchorID = "ImmichLibraryTopAnchor"
 
 private struct PhotoGridItemFramePreferenceKey: PreferenceKey {
   static let defaultValue: [String: CGRect] = [:]
@@ -33,6 +34,8 @@ struct LibraryGridView: View {
   @State private var heroItemFrames: [String: CGRect] = [:]
   @State private var dragSelectionState: DragSelectionState?
   @State private var keyboardScrollTargetID: String?
+  @State private var pendingTimelineScrollToTop = false
+  @FocusState private var isKeyboardFocused: Bool
 
   private struct SpatialBucket: Hashable {
     let x: Int
@@ -61,31 +64,230 @@ struct LibraryGridView: View {
     ]
   }
 
+  private var yearsGridColumns: [GridItem] {
+    Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
+  }
+
+  // MARK: - Years Grid
+
+  private func yearsGrid(scrollProxy: ScrollViewProxy) -> some View {
+    let context = appState.thumbnailContext
+    return interactiveGridChrome(
+      ScrollView {
+      LazyVGrid(columns: yearsGridColumns, spacing: 8) {
+        ForEach(appState.libraryYearSections) { section in
+          if let item = section.representativeItem ?? section.items.first {
+            Button {
+              // Switch to months view
+              appState.timelineViewMode = .months
+              // Bonus: scroll to that year? (Optional stretch goal)
+            } label: {
+              AssetThumbnailView(
+                item: item,
+                context: context,
+                store: thumbnailStore
+              )
+              .aspectRatio(1.0, contentMode: .fill)
+              .frame(minWidth: 0, maxWidth: .infinity)
+              .clipped()
+              .overlay(alignment: .topLeading) {
+                Text(section.title)
+                  .font(.system(size: 48, weight: .bold))
+                  .foregroundStyle(.white)
+                  .shadow(color: .black.opacity(0.6), radius: 4, y: 2)
+                  .padding([.top, .leading], 12)
+              }
+              .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+              .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+          }
+        }
+      }
+      .padding(.horizontal, 8)
+      .padding(.vertical, 8)
+    },
+      clearSelection: { appState.selectedItemID = nil }
+    )
+    .animation(ImmichMotion.Curves.heroCollapse, value: appState.photoGridScaleIndex)
+  }
+
+  // MARK: - Months Mosaic
+
+  private func monthsMosaic(scrollProxy: ScrollViewProxy) -> some View {
+    let context = appState.thumbnailContext
+    let sections = appState.librarySections
+    return interactiveGridChrome(
+      ScrollView {
+      LazyVStack(alignment: .leading, spacing: 16) {
+        ForEach(sections) { section in
+          VStack(alignment: .leading, spacing: 8) {
+            Text(section.title)
+              .font(.title2.weight(.bold))
+              .foregroundStyle(.primary)
+              .padding(.horizontal, 8)
+
+            monthsMosaicSection(items: section.items, context: context)
+          }
+          .onAppear {
+            appState.loadMoreTimelineIfNeeded(after: section.id)
+          }
+        }
+
+        // Footer
+        if let footer = appState.timelineFooterMessage {
+          HStack {
+            Spacer()
+            if appState.isLoadingTimeline {
+              ProgressView().controlSize(.small)
+              Text(footer).foregroundStyle(.secondary)
+            } else {
+              Button(footer) { Task { await appState.loadNextTimelinePage() } }
+                .buttonStyle(.bordered)
+            }
+            Spacer()
+          }
+          .padding(.vertical, 16)
+        }
+      }
+      .padding(.horizontal, 8)
+      .padding(.vertical, 8)
+    },
+      clearSelection: { appState.selectedItemID = nil }
+    )
+    .animation(ImmichMotion.Curves.heroCollapse, value: appState.photoGridScaleIndex)
+  }
+
+  @ViewBuilder
+  private func monthsMosaicSection(items: [AppState.PhotoItem], context: AppState.ThumbnailContext?) -> some View {
+    let spacing: CGFloat = 8
+    VStack(spacing: spacing) {
+      if items.count >= 3 {
+        HStack(spacing: spacing) {
+          mosaicCell(item: items[0], context: context)
+            .aspectRatio(0.8, contentMode: .fill)
+            .frame(minWidth: 0, maxWidth: .infinity)
+            .layoutPriority(1)
+          
+          VStack(spacing: spacing) {
+            mosaicCell(item: items[1], context: context)
+              .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+              .clipped()
+            
+            mosaicCell(item: items[2], context: context)
+              .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+              .clipped()
+          }
+          .frame(minWidth: 0, maxWidth: .infinity)
+        }
+      } else if items.count == 2 {
+        HStack(spacing: spacing) {
+          mosaicCell(item: items[0], context: context)
+            .frame(maxWidth: .infinity)
+            .aspectRatio(1.0, contentMode: .fill)
+          mosaicCell(item: items[1], context: context)
+            .frame(maxWidth: .infinity)
+            .aspectRatio(1.0, contentMode: .fill)
+        }
+      } else if items.count == 1 {
+        mosaicCell(item: items[0], context: context)
+          .frame(maxWidth: .infinity)
+          .aspectRatio(1.5, contentMode: .fill)
+      }
+
+      // Rest of items in grid
+      if items.count > 3 {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: spacing), count: 4), spacing: spacing) {
+          ForEach(items.dropFirst(3)) { item in
+            mosaicCell(item: item, context: context)
+              .aspectRatio(1.0, contentMode: .fill)
+              .clipped()
+          }
+        }
+      }
+    }
+  }
+
+  private func mosaicCell(item: AppState.PhotoItem, context: AppState.ThumbnailContext?) -> some View {
+    Button {
+      appState.selectedItemID = item.id
+      onOpenAsset(
+        item,
+        heroItemFrames[item.id] ?? itemFrames[item.id] ?? .zero,
+        thumbnailStore.cachedImage(for: item, context: context, size: .thumbnail)
+      )
+    } label: {
+      AssetThumbnailView(
+        item: item,
+        context: context,
+        store: thumbnailStore
+      )
+      .overlay(alignment: .topLeading) {
+        Text("\(item.dayOfMonth)")
+          .font(.system(size: 22, weight: .bold))
+          .foregroundStyle(.white)
+          .shadow(color: .black.opacity(0.6), radius: 3, y: 1)
+          .padding([.top, .leading], 8)
+      }
+      .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .contentShape(Rectangle())
+      .background {
+        GeometryReader { proxy in
+          Color.clear.preference(
+            key: PhotoGridItemFramePreferenceKey.self,
+            value: [item.id: proxy.frame(in: .named(photoGridCoordinateSpace))]
+          )
+          .preference(
+            key: PhotoHeroSourceFramePreferenceKey.self,
+            value: [item.id: proxy.frame(in: .named(photoHeroCoordinateSpaceName))]
+          )
+        }
+      }
+    }
+    .buttonStyle(.plain)
+    .id(item.id)
+  }
+
   var body: some View {
     ScrollViewReader { proxy in
       Group {
         if appState.filteredItems.isEmpty {
-          if appState.isLoadingTimeline {
+          if appState.isLoadingTimeline || appState.isSearching {
             loadingView
           } else {
             emptyView
           }
-        } else if shouldShowSectionedTimeline {
-          sectionedTimeline
+        } else if isLibraryTimeline && appState.timelineViewMode == .years {
+          yearsGrid(scrollProxy: proxy)
+        } else if isLibraryTimeline && appState.timelineViewMode == .months {
+          monthsMosaic(scrollProxy: proxy)
         } else {
-          flatGrid
+          flatGrid(scrollProxy: proxy)
         }
       }
-      .focusable()
-      .focusEffectDisabled()
+      .animation(ImmichMotion.Curves.structuralMedium, value: appState.timelineViewMode)
       .onChange(of: appState.isMultiSelectMode) { _, isEnabled in
         if !isEnabled {
           dragSelectionState = nil
         }
       }
+      .onChange(of: appState.timelineViewMode) { previousMode, newMode in
+        guard isLibraryTimeline else { return }
+        guard previousMode != .allPhotos, newMode == .allPhotos else { return }
+        pendingTimelineScrollToTop = true
+        DispatchQueue.main.async {
+          isKeyboardFocused = true
+        }
+      }
+      .onChange(of: appState.selectedItemID) { _, newID in
+        guard newID != nil, !appState.isViewingPhoto else { return }
+        DispatchQueue.main.async {
+          isKeyboardFocused = true
+        }
+      }
       .onChange(of: keyboardScrollTargetID) { _, targetID in
         guard let targetID else { return }
-        withAnimation(.easeInOut(duration: 0.18)) {
+        withAnimation(ImmichMotion.Curves.structuralQuick) {
           proxy.scrollTo(targetID, anchor: .center)
         }
         DispatchQueue.main.async {
@@ -94,26 +296,18 @@ struct LibraryGridView: View {
           }
         }
       }
-      .onKeyPress(.leftArrow) { moveSelection(by: -1, shouldScrollIntoView: true); return .handled }
-      .onKeyPress(.rightArrow) { moveSelection(by: 1, shouldScrollIntoView: true); return .handled }
-      .onKeyPress(.upArrow) { moveSelectionVertically(.up, shouldScrollIntoView: true); return .handled }
-      .onKeyPress(.downArrow) { moveSelectionVertically(.down, shouldScrollIntoView: true); return .handled }
-      .onKeyPress(.return) {
-        guard !appState.isViewingPhoto else { return .ignored }
-        openSelected()
-        return .handled
-      }
-      .dropDestination(for: URL.self) { urls, _ in
-        appState.importFiles(urls)
-        return true
-      }
     }
   }
 
   /// Flat ordered list of all visible items matching the current grid order.
   private var orderedItems: [AppState.PhotoItem] {
-    if shouldShowSectionedTimeline {
-      return appState.librarySections.flatMap(\.items)
+    let isLibrary = appState.sidebarSelection == .library || appState.sidebarSelection == nil
+    if isLibrary && appState.searchText.isEmpty {
+      if appState.timelineViewMode == .months {
+        return appState.librarySections.flatMap(\.items)
+      } else if appState.timelineViewMode == .years {
+        return appState.libraryYearSections.compactMap { $0.representativeItem ?? $0.items.first }
+      }
     }
     return appState.filteredItems
   }
@@ -129,6 +323,40 @@ struct LibraryGridView: View {
   private enum VerticalSelectionDirection {
     case up
     case down
+  }
+
+  private func interactiveGridChrome<Content: View>(
+    _ content: Content,
+    clearSelection: @escaping () -> Void
+  ) -> some View {
+    content
+      .focusable()
+      .focused($isKeyboardFocused)
+      .focusEffectDisabled()
+      .overlay { scrubSelectionOverlay }
+      .coordinateSpace(name: photoGridCoordinateSpace)
+      .onTapGesture {
+        clearSelection()
+        isKeyboardFocused = true
+      }
+      .onPreferenceChange(PhotoGridItemFramePreferenceKey.self) { updateItemFrames($0) }
+      .onPreferenceChange(PhotoHeroSourceFramePreferenceKey.self) { frames in
+        heroItemFrames = frames
+        onHeroFramesChanged(frames)
+      }
+      .onKeyPress(.leftArrow) { moveSelection(by: -1, shouldScrollIntoView: true); return .handled }
+      .onKeyPress(.rightArrow) { moveSelection(by: 1, shouldScrollIntoView: true); return .handled }
+      .onKeyPress(.upArrow) { moveSelectionVertically(.up, shouldScrollIntoView: true); return .handled }
+      .onKeyPress(.downArrow) { moveSelectionVertically(.down, shouldScrollIntoView: true); return .handled }
+      .onKeyPress(.return) {
+        guard !appState.isViewingPhoto else { return .ignored }
+        openSelected()
+        return .handled
+      }
+      .dropDestination(for: URL.self) { urls, _ in
+        appState.importFiles(urls)
+        return true
+      }
   }
 
   private func moveSelection(by offset: Int, shouldScrollIntoView: Bool = false) {
@@ -147,7 +375,7 @@ struct LibraryGridView: View {
 
   private func moveSelectionVertically(_ direction: VerticalSelectionDirection, shouldScrollIntoView: Bool = false) {
     let items = orderedItems
-    let itemIndices = Dictionary(uniqueKeysWithValues: items.enumerated().map { ($0.element.id, $0.offset) })
+    let itemIndices = Dictionary(items.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { _, new in new })
     guard !items.isEmpty else { return }
     guard let currentID = appState.selectedItemID,
           let currentIndex = itemIndices[currentID],
@@ -268,7 +496,7 @@ struct LibraryGridView: View {
     onOpenAsset(item, sourceFrame, sourceImage)
   }
 
-  private var shouldShowSectionedTimeline: Bool {
+  private var isLibraryTimeline: Bool {
     (appState.sidebarSelection == .library || appState.sidebarSelection == nil)
     && appState.searchText.isEmpty
   }
@@ -277,7 +505,7 @@ struct LibraryGridView: View {
     guard var dragSelectionState else { return }
     guard dragSelectionState.visitedItemIDs.insert(itemID).inserted else { return }
 
-    withAnimation(.easeOut(duration: 0.08)) {
+    withAnimation(ImmichMotion.Curves.interactiveQuick) {
       appState.setItemSelection(itemID, isSelected: dragSelectionState.mode == .select)
     }
     appState.selectedItemID = itemID
@@ -370,93 +598,17 @@ struct LibraryGridView: View {
     }
   }
 
-  // MARK: - Sectioned Timeline
-
-  private var sectionedTimeline: some View {
-    let context = appState.thumbnailContext
-    let selectedID = appState.selectedItemID
-    return ScrollView {
-      LazyVStack(alignment: .leading, spacing: 12) {
-        ForEach(appState.librarySections) { section in
-          VStack(alignment: .leading, spacing: 4) {
-            // Section header (Photos-style: subtle date label)
-            Text(section.title)
-              .font(.subheadline.weight(.semibold))
-              .foregroundStyle(.secondary)
-              .padding(.horizontal, 4)
-              .padding(.top, 4)
-
-            // Photo grid
-            LazyVGrid(columns: gridColumns, spacing: appState.photoGridSpacing) {
-              ForEach(section.items) { item in
-                PhotoGridCell(
-                  item: item,
-                  isSelected: item.id == selectedID,
-                  isMultiSelected: appState.selectedItemIDs.contains(item.id),
-                  isMultiSelectMode: appState.isMultiSelectMode,
-                  heroHidden: heroHiddenItemID == item.id,
-                  context: context,
-                  thumbnailStore: thumbnailStore,
-                  onSelect: { appState.selectedItemID = item.id },
-                  onOpen: { item, sourceFrame, sourceImage in
-                    appState.selectedItemID = item.id
-                    onOpenAsset(item, heroItemFrames[item.id] ?? sourceFrame, sourceImage)
-                  },
-                  onFavoriteToggle: { appState.toggleFavorite(for: item.id) },
-                  onMultiSelectToggle: { appState.toggleItemSelection(item.id) },
-                  onDownload: { appState.downloadAsset(item.id) },
-                  onAddToAlbum: {
-                    appState.selectedItemIDs = [item.id]
-                    appState.showAddToAlbumSheet = true
-                  },
-                  onEditTags: {
-                    appState.presentTagEditor(for: [item.id], currentTags: [], title: "Edit Tags")
-                  }
-                )
-                .id(item.id)
-              }
-            }
-          }
-          .onAppear {
-            appState.loadMoreTimelineIfNeeded(after: section.id)
-          }
-        }
-
-        // Footer
-        if let footer = appState.timelineFooterMessage {
-          HStack {
-            Spacer()
-            if appState.isLoadingTimeline {
-              ProgressView().controlSize(.small)
-              Text(footer).foregroundStyle(.secondary)
-            } else {
-              Button(footer) { Task { await appState.loadNextTimelinePage() } }
-                .buttonStyle(.bordered)
-            }
-            Spacer()
-          }
-          .padding(.vertical, 16)
-        }
-      }
-      .padding(.horizontal, appState.photoGridPadding)
-      .padding(.vertical, appState.photoGridPadding)
-    }
-    .overlay { scrubSelectionOverlay }
-    .coordinateSpace(name: photoGridCoordinateSpace)
-    .onPreferenceChange(PhotoGridItemFramePreferenceKey.self) { updateItemFrames($0) }
-    .onPreferenceChange(PhotoHeroSourceFramePreferenceKey.self) { frames in
-      heroItemFrames = frames
-      onHeroFramesChanged(frames)
-    }
-    .animation(.easeInOut(duration: 0.22), value: appState.photoGridScaleIndex)
-  }
-
   // MARK: - Flat Grid
 
-  private var flatGrid: some View {
+  private func flatGrid(scrollProxy: ScrollViewProxy) -> some View {
     let context = appState.thumbnailContext
     let selectedID = appState.selectedItemID
-    return ScrollView {
+    return interactiveGridChrome(
+      ScrollView {
+      Color.clear
+        .frame(height: 0)
+        .id(libraryTopAnchorID)
+
       LazyVGrid(columns: gridColumns, spacing: appState.photoGridSpacing) {
         ForEach(appState.filteredItems) { item in
           PhotoGridCell(
@@ -472,6 +624,7 @@ struct LibraryGridView: View {
               appState.selectedItemID = item.id
               onOpenAsset(item, heroItemFrames[item.id] ?? sourceFrame, sourceImage)
             },
+            onGetInfo: { appState.presentInfo(for: item.id) },
             onFavoriteToggle: { appState.toggleFavorite(for: item.id) },
             onMultiSelectToggle: { appState.toggleItemSelection(item.id) },
             onDownload: { appState.downloadAsset(item.id) },
@@ -489,14 +642,21 @@ struct LibraryGridView: View {
       .padding(.horizontal, appState.photoGridPadding)
       .padding(.vertical, appState.photoGridPadding)
     }
-    .overlay { scrubSelectionOverlay }
-    .coordinateSpace(name: photoGridCoordinateSpace)
-    .onPreferenceChange(PhotoGridItemFramePreferenceKey.self) { updateItemFrames($0) }
-    .onPreferenceChange(PhotoHeroSourceFramePreferenceKey.self) { frames in
-      heroItemFrames = frames
-      onHeroFramesChanged(frames)
+    .onAppear {
+      isKeyboardFocused = true
+      guard pendingTimelineScrollToTop else { return }
+      scrollToMostRecent(using: scrollProxy)
+    },
+      clearSelection: { appState.selectedItemID = nil }
+    )
+    .animation(ImmichMotion.Curves.heroCollapse, value: appState.photoGridScaleIndex)
+  }
+
+  private func scrollToMostRecent(using proxy: ScrollViewProxy) {
+    withAnimation(ImmichMotion.Curves.heroCollapse) {
+      proxy.scrollTo(libraryTopAnchorID, anchor: .top)
     }
-    .animation(.easeInOut(duration: 0.22), value: appState.photoGridScaleIndex)
+    pendingTimelineScrollToTop = false
   }
 
   // MARK: - Empty / Loading
@@ -513,9 +673,10 @@ struct LibraryGridView: View {
 
   private var emptyView: some View {
     VStack(spacing: 16) {
-      Image(systemName: "photo.on.rectangle.angled")
+      Image(systemName: !appState.searchText.isEmpty ? "magnifyingglass" : "photo.on.rectangle.angled")
         .font(.system(size: 48, weight: .light))
         .foregroundStyle(.quaternary)
+        .accessibilityHidden(true)
 
       VStack(spacing: 6) {
         Text(appState.emptyStateTitle)
@@ -560,6 +721,7 @@ struct PhotoGridCell: View {
   let thumbnailStore: ThumbnailStore
   let onSelect: () -> Void
   let onOpen: (AppState.PhotoItem, CGRect, NSImage?) -> Void
+  let onGetInfo: () -> Void
   let onFavoriteToggle: () -> Void
   let onMultiSelectToggle: () -> Void
   var onDownload: (() -> Void)?
@@ -572,6 +734,13 @@ struct PhotoGridCell: View {
   var body: some View {
     contentLayer
     .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+    .shadow(
+      color: .black.opacity(isHovered && !isSelected ? 0.15 : 0),
+      radius: isHovered && !isSelected ? 8 : 0,
+      y: isHovered && !isSelected ? 4 : 0
+    )
+    .scaleEffect(isHovered && !isSelected && !isMultiSelectMode ? 1.02 : 1.0)
+    .animation(ImmichMotion.Curves.interactive, value: isHovered)
     .background {
       GeometryReader { proxy in
         Color.clear.preference(
@@ -585,12 +754,11 @@ struct PhotoGridCell: View {
       }
     }
     .overlay {
-      // Keep normal single-item selection visible, but reserve multi-select
-      // checkboxes and multi-selection for explicit selection mode only.
-      if isSelected || (isMultiSelectMode && isMultiSelected) {
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-          .strokeBorder(Color.accentColor, lineWidth: isMultiSelectMode && isMultiSelected ? 3 : 2)
-      }
+      RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        .strokeBorder(Color.accentColor, lineWidth: isMultiSelectMode && isMultiSelected ? 3 : 2)
+        .opacity(isSelected || (isMultiSelectMode && isMultiSelected) ? 1 : 0)
+        .animation(ImmichMotion.Curves.interactiveFast, value: isSelected)
+        .animation(ImmichMotion.Curves.interactiveFast, value: isMultiSelected)
     }
     .overlay(alignment: .topLeading) {
       // Multi-select checkbox
@@ -622,30 +790,56 @@ struct PhotoGridCell: View {
         .transition(.opacity)
       }
     }
-    .onHover { isHovered = $0 }
+    .onHover { hovering in
+      withAnimation(ImmichMotion.Curves.interactiveFast) {
+        isHovered = hovering
+      }
+    }
     .contextMenu {
-      Button("Open") {
+      Button {
         onOpen(
           item,
           .zero,
           thumbnailStore.cachedImage(for: item, context: context, size: .thumbnail)
         )
+      } label: {
+        Label("Open", systemImage: "arrow.up.left.and.arrow.down.right")
       }
-      Button(item.isFavorite ? "Unfavorite" : "Favorite") { onFavoriteToggle() }
+      Button {
+        onFavoriteToggle()
+      } label: {
+        Label(item.isFavorite ? "Unfavorite" : "Favorite", systemImage: item.isFavorite ? "heart.slash" : "heart")
+      }
       Divider()
       if let onDownload = onDownload {
-        Button("Download Original") { onDownload() }
+        Button {
+          onDownload()
+        } label: {
+          Label("Download Original", systemImage: "arrow.down.circle")
+        }
       }
       if let onAddToAlbum = onAddToAlbum {
-        Button("Add to Album…") { onAddToAlbum() }
+        Button {
+          onAddToAlbum()
+        } label: {
+          Label("Add to Album…", systemImage: "rectangle.stack.badge.plus")
+        }
       }
       if let onEditTags = onEditTags {
-        Button("Edit Tags…") { onEditTags() }
+        Button {
+          onEditTags()
+        } label: {
+          Label("Edit Tags…", systemImage: "tag")
+        }
       }
       if onDownload != nil || onAddToAlbum != nil || onEditTags != nil {
         Divider()
       }
-      Button("Get Info") { onSelect() }
+      Button {
+        onGetInfo()
+      } label: {
+        Label("Get Info", systemImage: "info.circle")
+      }
     }
   }
 
@@ -673,16 +867,20 @@ struct PhotoGridCell: View {
         if item.isFavorite {
           Image(systemName: "heart.fill")
             .foregroundStyle(.white)
+            .accessibilityHidden(true)
         }
         if item.isVideo {
           Image(systemName: "video.fill")
             .foregroundStyle(.white)
+            .accessibilityHidden(true)
         } else if item.isLivePhoto {
           Image(systemName: "livephoto")
             .foregroundStyle(.white)
+            .accessibilityHidden(true)
         }
         if let count = item.stackCount, count > 0 {
           Image(systemName: "square.stack")
+            .accessibilityHidden(true)
           Text("+\(count)").font(.caption2)
         }
       }
